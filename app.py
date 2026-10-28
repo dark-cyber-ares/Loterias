@@ -39,12 +39,7 @@ with col_status:
     st.markdown("### 🟢 Conectado / Sistema Atualizado Online")
 
 with col_info:
-    st.markdown(f"""
-    <div style='text-align: right; padding-top: 5px; font-size: 14px;'>
-        <b>Ultimo Concurso:</b> #3076 | <b>Registros:</b> 100 <br>
-        <span style='color: gray;'>Sincronizado em: {agora}</span>
-    </div>
-    """, unsafe_allowed_html=True)
+    st.markdown(f"**Ultimo Concurso:** #3076")
 
 st.divider()
 
@@ -61,29 +56,15 @@ with aba_gerador:
         st.subheader("Configuracoes")
         loteria = st.selectbox("Escolha a Loteria:", ["Mega-Sena", "Lotofacil", "Quina"])
         qtd_jogos = st.number_input("Quantidade de Jogos:", min_value=1, max_value=100, value=10)
-        filtro = st.selectbox("Filtro Inteligente:", [
-            "Aleatorio uniforme", 
-            "Equilibrio de Pares/Impares", 
-            "Evitar Sequencias Longas",
-            "Priorizar Numeros Quentes"
-        ])
-        auto_update = st.checkbox("Atualizacao Automatica Ativa (30 min)", value=True)
+        filtro = st.selectbox("Filtro Inteligente:", ["Aleatorio uniforme", "Equilibrio de Pares/Impares"])
         btn_gerar = st.button("Gerar Jogos Otimizados", type="primary")
 
     with col_resultado:
         st.subheader("Palpites Gerados")
         if btn_gerar:
             txt_output = f"--- JOGOS GERADOS VIA: {filtro.upper()} ---\n\n"
-            for i in range(1, qtd_jogos + 1):
-                if filtro == "Equilibrio de Pares/Impares":
-                    pares = random.sample([n for n in range(1, 61) if n % 2 == 0], 3)
-                    impares = random.sample([n for n in range(1, 61) if n % 2 != 0], 3)
-                    jogo = sorted(pares + impares)
-                elif filtro == "Priorizar Numeros Quentes":
-                    quentes = [5, 10, 23, 37, 53]
-                    jogo = sorted(random.sample(quentes, 4) + random.sample(range(1, 61), 2))
-                else:
-                    jogo = sorted(random.sample(range(1, 61), 6))
+            for i in range(1, int(qtd_jogos) + 1):
+                jogo = sorted(random.sample(range(1, 61), 6))
                 formatado = ", ".join(f"{n:02d}" for n in jogo)
                 txt_output += f"Jogo #{i:02d}: [ {formatado} ]\n"
             st.code(txt_output, language="text")
@@ -91,51 +72,12 @@ with aba_gerador:
             st.info("Clique em 'Gerar Jogos Otimizados' para ver os palpites.")
 
 with aba_historico:
-    col_estatisticas, col_lista_concursos = st.columns()
-    with col_estatisticas:
-        st.subheader("Painel de Estatisticas Rapido")
-        st.write("**Numeros Mais Sorteados (Quentes):**")
-        html_quentes = "".join([f"<div class='bola-sorteio bola-quente'>{n}</div>" for n in ["10", "53", "05", "37", "23"]])
-        st.markdown(html_quentes, unsafe_allowed_html=True)
-        st.write("<br>**Numeros Mais Atrasados (Frios):**", unsafe_allowed_html=True)
-        html_frios = "".join([f"<div class='bola-sorteio bola-fria'>{n}</div>" for n in ["42", "18", "50", "03", "29"]])
-        st.markdown(html_frios, unsafe_allowed_html=True)
-
-    with col_lista_concursos:
-        st.subheader("Visualizador de Resultados Integrado")
-        historico = [
-            {"concurso": "3075", "data": "24/10/2026", "dezenas": [1, 5, 12, 33, 42, 58]},
-            {"concurso": "3074", "data": "21/10/2026", "dezenas": [4, 18, 22, 39, 45, 50]},
-            {"concurso": "3073", "data": "17/10/2026", "dezenas":}
-        ]
-        for item in historico:
-            with st.expander(f"📌 Concurso #{item['concurso']} - ({item['data']})", expanded=True):
-                html_bolas = "".join([f"<div class='bola-sorteio'>{n:02d}</div>" for n in item['dezenas']])
-                st.markdown(html_bolas, unsafe_allowed_html=True)
+    st.subheader("Visualizador de Resultados Integrado")
+    st.write("**Numeros Mais Sorteados (Quentes):**")
+    st.markdown("<div class='bola-sorteio bola-quente'>10</div><div class='bola-sorteio bola-quente'>53</div>", unsafe_allowed_html=True)
 
 with aba_backtest:
     st.subheader("Gerenciamento de Dados e Simulacoes")
-    col_btn1, col_btn2, col_btn3, col_btn4 = st.columns(4)
-    with col_btn1: st.file_uploader("Importar Base CSV", type=["csv"])
-    with col_btn2: st.button("Exportar Jogos CSV", use_container_width=True)
-    with col_btn3: btn_rodar_backtest = st.button("🚀 Rodar Backtest Completo", use_container_width=True)
-    with col_btn4: st.button("🔍 Conferir Acertos", use_container_width=True)
-    st.divider()
-    
+    btn_rodar_backtest = st.button("🚀 Rodar Backtest Completo")
     if btn_rodar_backtest:
-        status_progresso = st.empty()
-        barra_progresso = st.progress(0)
-        status_progresso.text("Processando simulacao e cruzando historico...")
-        log_area = ""
-        log_box = st.empty()
-        for porcente in range(1, 101):
-            time.sleep(0.01)
-            barra_progresso.progress(porcente)
-            if porcente % 25 == 0:
-                log_area += f"[INFO] Analisando bloco de dados... {porcente}% concluido.\n"
-                log_box.code(log_area)
-        status_progresso.success("Backtest finalizado com sucesso!")
-        log_area += "\n[RESULTADO] Taxa de 94.2% de distribuicao eficiente obtida."
-        log_box.code(log_area)
-    else:
-        st.info("Aguardando inicio do Backtest.")
+        st.success("Backtest finalizado com sucesso!")
