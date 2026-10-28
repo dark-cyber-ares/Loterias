@@ -10,7 +10,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# Estilizacao das bolinhas
+# Estilizacao das bolinhas via CSS
 st.markdown("""
     <style>
     .bola-sorteio {
@@ -48,7 +48,7 @@ with col_info:
 
 st.divider()
 
-# 3. ABAS
+# 3. ABAS PROFISSIONAIS
 aba_gerador, aba_historico, aba_backtest = st.tabs([
     "🎯 Gerador de Jogos", 
     "📊 Historico & Estatisticas", 
@@ -80,7 +80,7 @@ with aba_gerador:
                     impares = random.sample([n for n in range(1, 61) if n % 2 != 0], 3)
                     jogo = sorted(pares + impares)
                 elif filtro == "Priorizar Numeros Quentes":
-                    quentes = [5, 10, 23, 33, 37, 53]
+                    quentes = [5, 10, 23, 37, 53]
                     jogo = sorted(random.sample(quentes, 4) + random.sample(range(1, 61), 2))
                 else:
                     jogo = sorted(random.sample(range(1, 61), 6))
@@ -104,8 +104,8 @@ with aba_historico:
     with col_lista_concursos:
         st.subheader("Visualizador de Resultados Integrado")
         historico = [
-            {"concurso": "3075", "data": "24/10/2026", "dezenas": [1, 12, 22, 34, 45, 58]},
-            {"concurso": "3074", "data": "21/10/2026", "dezenas": [5, 14, 23, 39, 41, 52]},
+            {"concurso": "3075", "data": "24/10/2026", "dezenas": [1, 5, 12, 33, 42, 58]},
+            {"concurso": "3074", "data": "21/10/2026", "dezenas": [4, 18, 22, 39, 45, 50]},
             {"concurso": "3073", "data": "17/10/2026", "dezenas":}
         ]
         for item in historico:
