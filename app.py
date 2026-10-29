@@ -9,9 +9,11 @@ from math import comb
 
 import pandas as pd
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import streamlit as st
 
-st.set_page_config(page_title='LoterIA Pro 4.0 Online', page_icon='🎯', layout='wide')
+st.set_page_config(page_title='LoterIA Pro 4.1 Online', page_icon='🎯', layout='wide')
 
 CONFIG = {
     'Mega-Sena': ('megasena', 1, 60, 6, 6),
@@ -26,11 +28,40 @@ CONFIG = {
 MESES = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro']
 BASE = 'https://servicebus2.caixa.gov.br/portaldeloterias/api'
 
+# Repetir apenas falhas transitórias de rede/servidor; nunca inventar resultados.
+@st.cache_resource
+def sessao_http():
+    sessao = requests.Session()
+    politica = Retry(
+        total=3, connect=2, read=2,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=frozenset(['GET']),
+        backoff_factor=0.8,
+        respect_retry_after_header=True,
+        raise_on_status=False,
+    )
+    sessao.mount('https://', HTTPAdapter(max_retries=politica))
+    return sessao
+
+
+def mensagem_erro(exc, modalidade):
+    if isinstance(exc, requests.exceptions.HTTPError) and exc.response is not None:
+        status = exc.response.status_code
+        if status in (500, 502, 503, 504):
+            return (f'Serviço da Caixa indisponível (HTTP {status}) para {modalidade}, '
+                    'mesmo após novas tentativas. Nenhum resultado novo foi confirmado. '
+                    'Tente novamente mais tarde.')
+        return f'Consulta à Caixa retornou HTTP {status}. Nenhum resultado novo foi confirmado.'
+    if isinstance(exc, (requests.exceptions.Timeout, requests.exceptions.ConnectionError)):
+        return 'Falha temporária de conexão com a Caixa. Nenhum resultado novo foi confirmado.'
+    return str(exc)
+
+
 @st.cache_data(ttl=900, show_spinner=False)
 def obter(modalidade, concurso=None):
     slug = CONFIG[modalidade][0]
     url = f'{BASE}/{slug}' + (f'/{int(concurso)}' if concurso else '')
-    response = requests.get(url, timeout=15, headers={'Accept':'application/json','User-Agent':'Mozilla/5.0'})
+    response = sessao_http().get(url, timeout=(8, 20), headers={'Accept':'application/json','User-Agent':'Mozilla/5.0'})
     response.raise_for_status()
     data = response.json()
     if not isinstance(data, dict) or not isinstance(data.get('numero'), int):
@@ -117,7 +148,7 @@ def conferir(j, d, mod):
         return f"{ac} números; mês {'certo' if j['mes']==d.get('nomeTimeCoracaoMesSorte') else 'errado'}"
     return f'{ac} acertos'
 
-st.title('🎯 LoterIA Pro 4.0 Online')
+st.title('🎯 LoterIA Pro 4.1 Online')
 st.caption('Análise estatística e geração de combinações. Nenhuma estratégia prevê sorteios aleatórios.')
 mod = st.selectbox('Modalidade', list(CONFIG))
 if 'jogos' not in st.session_state: st.session_state.jogos = {}
@@ -138,7 +169,7 @@ if consultar:
         st.session_state[f'ultimo_{mod}'] = d
         st.session_state[f'hora_{mod}'] = datetime.now().strftime('%d/%m/%Y %H:%M:%S')
     except Exception as exc:
-        st.error(f'Não foi possível confirmar resultado online: {exc}')
+        st.error(f'Não foi possível confirmar resultado online: {mensagem_erro(exc, mod)}')
 ultimo = st.session_state.get(f'ultimo_{mod}')
 if ultimo:
     st.success(f"Último concurso confirmado nesta sessão: {ultimo['numero']} — {ultimo.get('dataApuracao','data não informada')} | Consulta: {st.session_state.get(f'hora_{mod}','')}")
@@ -170,7 +201,7 @@ with historico:
                 progresso.progress((i+1)/min(int(limite),base))
             st.success(f'{ok} concursos validados; {falhas} não carregados.')
         except Exception as exc:
-            st.error(f'Falha na consulta: {exc}')
+            st.error(f'Falha na consulta: {mensagem_erro(exc, mod)}')
     dados = list(st.session_state.historicos.get(mod,{}).values())
     st.write(f'Concursos válidos armazenados nesta sessão: {len(dados)}')
     if dados:
