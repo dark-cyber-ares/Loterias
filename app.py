@@ -125,33 +125,74 @@ def buscar_fonte(url):
     return r.json()
 
 
+def diagnostico_erro(exc):
+    """Expõe informações úteis sem incluir URLs ou conteúdos completos de respostas."""
+    if isinstance(exc, RuntimeError):
+        return str(exc)[:240]
+    if isinstance(exc, requests.HTTPError) and exc.response is not None:
+        return f'HTTP {exc.response.status_code}'
+    if isinstance(exc, requests.exceptions.RetryError):
+        causa = str(exc)
+        match = re.search(r'(?:status|ResponseError).*?(\d{3})', causa, re.IGNORECASE)
+        return f'RetryError (HTTP {match.group(1)})' if match else 'RetryError (tentativas esgotadas)'
+    if isinstance(exc, requests.exceptions.Timeout):
+        return 'Tempo limite de conexão/resposta'
+    if isinstance(exc, requests.exceptions.ConnectionError):
+        return 'Falha de conexão'
+    if isinstance(exc, requests.exceptions.JSONDecodeError):
+        return 'Resposta não é JSON válido'
+    if isinstance(exc, ValueError):
+        return f'Validação: {str(exc)[:110]}'
+    return type(exc).__name__
+
+
+def buscar_super_sete(url):
+    """Tenta uma sessão HTTP independente após falha da sessão padrão.
+
+    Não ignora HTTP, não altera dados e não contorna restrições do servidor.
+    """
+    try:
+        return buscar_fonte(url)
+    except (requests.RequestException, ValueError) as primeira:
+        # Nova sessão sem o cache de conexões/retries anterior; apenas uma tentativa.
+        try:
+            with requests.Session() as s:
+                s.headers.update({'Accept': 'application/json',
+                                  'User-Agent': 'LoterIA-Pro/4.2.4 (consulta publica)'})
+                r = s.get(url, timeout=(5, 15), headers={'Cache-Control': 'no-cache'})
+                r.raise_for_status()
+                return r.json()
+        except (requests.RequestException, ValueError) as segunda:
+            raise RuntimeError(f'{diagnostico_erro(primeira)}; segunda tentativa: {diagnostico_erro(segunda)}') from segunda
+
+
 @st.cache_data(ttl=900, show_spinner=False)
 def obter(mod, concurso=None, permitir_alternativa=True):
     slug = CONFIG[mod][0]
     erros = []
     url = f'{CAIXA}/{slug}' + (f'/{concurso}' if concurso is not None else '')
     try:
-        d = buscar_fonte(url)
+        d = (buscar_super_sete(url) if mod == 'Super Sete' else buscar_fonte(url))
         if not resultado_validado(mod, d, concurso):
             raise ValueError('dados oficiais incompletos ou inválidos')
         return {'dados': d, 'fonte': 'CAIXA (serviço oficial)', 'url': url}
-    except (requests.RequestException, ValueError, TypeError) as e:
-        erros.append(f'CAIXA: {type(e).__name__}')
+    except (requests.RequestException, ValueError, TypeError, RuntimeError) as e:
+        erros.append(f'CAIXA: {diagnostico_erro(e)}' if mod == 'Super Sete' else f'CAIXA: {type(e).__name__}')
     if permitir_alternativa:
         url_alt = f'{GUIDI}/{slug}/' + (str(concurso) if concurso is not None else 'ultimo')
         try:
-            d = normalizar_alternativa(mod, buscar_fonte(url_alt))
+            d = normalizar_alternativa(mod, buscar_super_sete(url_alt) if mod == 'Super Sete' else buscar_fonte(url_alt))
             if not resultado_validado(mod, d, concurso):
                 raise ValueError('dados alternativos incompletos ou inválidos')
             return {'dados': d, 'fonte': 'API Guidi (terceiro; não oficial)', 'url': url_alt}
-        except (requests.RequestException, ValueError, TypeError) as e:
-            erros.append(f'Guidi: {type(e).__name__}')
+        except (requests.RequestException, ValueError, TypeError, RuntimeError) as e:
+            erros.append(f'Guidi: {diagnostico_erro(e)}' if mod == 'Super Sete' else f'Guidi: {type(e).__name__}')
     # Terceira fonte verificada manualmente para Super Sete (serviço não oficial).
     # A resposta fornece dezenasOrdemSorteio, que preserva C1...C7.
     if permitir_alternativa and mod == 'Super Sete':
         url_terceira = f'{HEROKU}/{slug}' + (f'/{concurso}' if concurso is not None else '')
         try:
-            bruto = buscar_fonte(url_terceira)
+            bruto = buscar_super_sete(url_terceira)
             if not isinstance(bruto, dict) or bruto.get('loteria') != slug:
                 raise ValueError('modalidade não confirmada na terceira fonte')
             if not isinstance(bruto.get('dezenasOrdemSorteio'), list):
@@ -160,8 +201,8 @@ def obter(mod, concurso=None, permitir_alternativa=True):
             if not resultado_validado(mod, d, concurso):
                 raise ValueError('dados da terceira fonte incompletos ou inválidos')
             return {'dados': d, 'fonte': 'API LoteriasCaixa Heroku (terceiro; não oficial)', 'url': url_terceira}
-        except (requests.RequestException, ValueError, TypeError) as e:
-            erros.append(f'Terceira API: {type(e).__name__}')
+        except (requests.RequestException, ValueError, TypeError, RuntimeError) as e:
+            erros.append(f'Terceira API: {diagnostico_erro(e)}')
     raise RuntimeError('; '.join(erros) + '. Nenhum resultado foi confirmado.')
 
 
@@ -240,7 +281,7 @@ def linha_historico(d, mod):
     return linha
 
 
-st.title('🎯 LoterIA Pro 4.2.3 — atualização automática (teste local)')
+st.title('🎯 LoterIA Pro 4.2.4 — diagnóstico Super Sete (teste local)')
 st.caption('Estatísticas descritivas e geração de combinações. Nenhuma estratégia prevê sorteios ou aumenta comprovadamente as chances.')
 mod = st.selectbox('Modalidade', list(CONFIG))
 if 'historicos' not in st.session_state:
