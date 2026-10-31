@@ -5,6 +5,7 @@ import re
 from collections import Counter
 from datetime import datetime, date
 from math import comb
+from html.parser import HTMLParser
 
 import pandas as pd
 import requests
@@ -28,6 +29,7 @@ CAIXA = 'https://servicebus2.caixa.gov.br/portaldeloterias/api'
 GUIDI = 'https://api.guidi.dev.br/loteria'
 HEROKU = 'https://loteriascaixa-api.herokuapp.com/api'
 VALORFINAL_SUPERSETE = 'https://valorfinal.com.br/data/supersete-historico.json'
+PORTAL_SUPERSETE = 'https://portaldasloterias.com.br/category/resultados-super-sete/'
 
 
 @st.cache_resource
@@ -216,6 +218,97 @@ def obter_valorfinal_supersete(concurso=None):
             'url': VALORFINAL_SUPERSETE}
 
 
+
+
+class _LinhasTabelaHTML(HTMLParser):
+    """Extrai células de tabelas HTML sem dependências adicionais."""
+    def __init__(self):
+        super().__init__()
+        self.linhas = []
+        self.linha = None
+        self.celula = None
+
+    def handle_starttag(self, tag, attrs):
+        if tag == 'tr':
+            self.linha = []
+        elif tag in ('td', 'th') and self.linha is not None:
+            self.celula = []
+
+    def handle_data(self, data):
+        if self.celula is not None:
+            self.celula.append(data)
+
+    def handle_endtag(self, tag):
+        if tag in ('td', 'th') and self.celula is not None:
+            self.linha.append(' '.join(''.join(self.celula).split()))
+            self.celula = None
+        elif tag == 'tr' and self.linha is not None:
+            if self.linha:
+                self.linhas.append(self.linha)
+            self.linha = None
+            self.celula = None
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def historico_portal_supersete():
+    """Consulta tabela pública independente; exige concurso, data e C1..C7 explícitos."""
+    resposta = sessao_http().get(PORTAL_SUPERSETE, timeout=(5, 15),
+                                headers={'Accept': 'text/html', 'Cache-Control': 'no-cache'})
+    resposta.raise_for_status()
+    analisador = _LinhasTabelaHTML()
+    analisador.feed(resposta.text)
+    encontrados = {}
+    for celulas in analisador.linhas:
+        if len(celulas) < 3:
+            continue
+        numero_txt = celulas[0].strip()
+        data_txt = celulas[1].strip()
+        if not re.fullmatch(r'\d{1,6}', numero_txt) or not re.fullmatch(r'\d{2}/\d{2}/\d{4}', data_txt):
+            continue
+        # A página apresenta as sete colunas em uma célula, separadas por espaços.
+        digitos = re.fullmatch(r'\s*([0-9](?:\s+|\s*[-|]\s*)){6}[0-9]\s*', celulas[2])
+        if not digitos:
+            continue
+        colunas = [int(x) for x in re.findall(r'\d', celulas[2])]
+        dado = {'numero': int(numero_txt), 'dataApuracao': data_txt,
+                'listaDezenas': colunas}
+        if resultado_validado('Super Sete', dado):
+            encontrados[dado['numero']] = dado
+    if not encontrados:
+        raise ValueError('nenhuma linha de Super Sete validada na tabela do Portal')
+    return encontrados
+
+
+def obter_portal_supersete(concurso=None):
+    registros = historico_portal_supersete()
+    escolhido = max(registros) if concurso is None else concurso
+    if escolhido not in registros:
+        raise ValueError(f'concurso {escolhido} não localizado na tabela do Portal')
+    return {'dados': dict(registros[escolhido]),
+            'fonte': 'Portal das Loterias (tabela independente; não oficial)',
+            'url': PORTAL_SUPERSETE}
+
+
+def obter_super_sete_independente(concurso=None):
+    """Prefere o concurso mais alto validado, sem assumir atualidade da fonte."""
+    candidatos, erros = [], []
+    for nome, funcao in [('Portal', obter_portal_supersete),
+                         ('ValorFinal', obter_valorfinal_supersete)]:
+        try:
+            candidatos.append(funcao(concurso))
+        except (requests.RequestException, ValueError, RuntimeError, TypeError) as exc:
+            erros.append(f'{nome}: {diagnostico_erro(exc)}')
+    if not candidatos:
+        raise RuntimeError('; '.join(erros))
+    candidatos.sort(key=lambda r: r['dados']['numero'], reverse=True)
+    if len(candidatos) > 1 and candidatos[0]['dados']['numero'] == candidatos[1]['dados']['numero']:
+        a, b = candidatos[:2]
+        if (a['dados']['listaDezenas'] != b['dados']['listaDezenas'] or
+                a['dados']['dataApuracao'] != b['dados']['dataApuracao']):
+            raise ValueError('fontes independentes divergem sobre o mesmo concurso')
+    return candidatos[0]
+
+
 @st.cache_data(ttl=900, show_spinner=False)
 def obter(mod, concurso=None, permitir_alternativa=True):
     slug = CONFIG[mod][0]
@@ -232,9 +325,9 @@ def obter(mod, concurso=None, permitir_alternativa=True):
     # pois a resposta "ultimo" da Guidi pode estar atrasada.
     if permitir_alternativa and mod == 'Super Sete':
         try:
-            return obter_valorfinal_supersete(concurso)
+            return obter_super_sete_independente(concurso)
         except (requests.RequestException, ValueError, TypeError, RuntimeError) as e:
-            erros.append(f'ValorFinal: {diagnostico_erro(e)}')
+            erros.append(f'Portal/ValorFinal: {diagnostico_erro(e)}')
     if permitir_alternativa:
         url_alt = f'{GUIDI}/{slug}/' + (str(concurso) if concurso is not None else 'ultimo')
         try:
@@ -338,7 +431,7 @@ def linha_historico(d, mod):
     return linha
 
 
-st.title('🎯 LoterIA Pro 4.2.6 — prioridade ValorFinal Super Sete (teste local)')
+st.title('🎯 LoterIA Pro 4.2.7 — fontes alternativas Super Sete (teste local)')
 st.caption('Estatísticas descritivas e geração de combinações. Nenhuma estratégia prevê sorteios ou aumenta comprovadamente as chances.')
 mod = st.selectbox('Modalidade', list(CONFIG))
 if 'historicos' not in st.session_state:
@@ -414,7 +507,7 @@ with st.expander('🔄 Atualização automática dos sorteios — oito modalidad
                               'Último concurso consultado': status.get('ultimo') or '—',
                               'Novos importados': status.get('novos', 0),
                               'Atualização': status.get('horario', '—'),
-                              'Situação': 'Falha: ' + '; '.join(falhas_status[:2]) if falhas_status else 'OK',
+                              'Situação': 'Falha: ' + '; '.join(falhas_status[:2]) if falhas_status else ('ATENÇÃO: fonte pode estar atrasada' if modalidade == 'Super Sete' and status.get('ultimo') and (date.today() - datetime.strptime(st.session_state.get(f'ultimo_{modalidade}', {}).get('dataApuracao', '01/01/2000'), '%d/%m/%Y').date()).days > 7 else 'OK'),
                               'Fonte': status.get('fonte', '—')})
     st.dataframe(pd.DataFrame(linhas_status), hide_index=True, use_container_width=True)
     st.info('Históricos são mantidos na sessão. Para preservar entre sessões ou reinícios, baixe o backup JSON.')
@@ -464,7 +557,7 @@ with c1:
     st.write('**Consultar resultado — Caixa primeiro; fonte independente opcional em caso de falha**')
     consultar = st.button('🔄 Consultar último resultado', type='primary')
 with c2:
-    alternativa = st.checkbox('Permitir fontes alternativas (Guidi, Heroku e ValorFinal para Super Sete)', value=True,
+    alternativa = st.checkbox('Permitir fontes alternativas (Guidi, Heroku, Portal e ValorFinal para Super Sete)', value=True,
                                help='Fonte de terceiros. Pode ter atraso, limites de acesso ou estar indisponível fora do Brasil.')
     st.caption('Cache de rede: até 15 minutos. A consulta automática acontece na abertura da sessão; o botão acima permite verificar novamente.')
 if consultar:
@@ -629,4 +722,4 @@ with aba_conf:
         st.caption('O backtest não prevê sorteios futuros e não calcula retorno financeiro.')
 
 st.divider()
-st.caption('Fontes: CAIXA (primária); API Guidi, LoteriasCaixa Heroku e ValorFinal (terceiros, alternativas opcionais). Todas sujeitas a falhas. Backup JSON é necessário para guardar dados entre sessões. Uso responsável.')
+st.caption('Fontes: CAIXA (primária); API Guidi, LoteriasCaixa Heroku, Portal das Loterias e ValorFinal (terceiros, alternativas opcionais). Todas sujeitas a falhas. Backup JSON é necessário para guardar dados entre sessões. Uso responsável.')
