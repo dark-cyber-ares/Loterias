@@ -27,6 +27,7 @@ MESES = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'A
 CAIXA = 'https://servicebus2.caixa.gov.br/portaldeloterias/api'
 GUIDI = 'https://api.guidi.dev.br/loteria'
 HEROKU = 'https://loteriascaixa-api.herokuapp.com/api'
+VALORFINAL_SUPERSETE = 'https://valorfinal.com.br/data/supersete-historico.json'
 
 
 @st.cache_resource
@@ -167,6 +168,55 @@ def buscar_super_sete(url):
 
 
 @st.cache_data(ttl=900, show_spinner=False)
+def historico_valorfinal_supersete():
+    """Lê e valida o histórico da fonte independente; não presume que esteja atualizado."""
+    bruto = buscar_fonte(VALORFINAL_SUPERSETE)
+    if not isinstance(bruto, dict) or bruto.get('modalidade') != 'supersete':
+        raise ValueError('modalidade Super Sete não confirmada no ValorFinal')
+    registros = bruto.get('concursos')
+    ultimo = bruto.get('ultimoConcurso')
+    if (not isinstance(registros, list) or not registros or
+            type(ultimo) is not int or ultimo < 1):
+        raise ValueError('histórico ou último concurso inválido no ValorFinal')
+    encontrados = {}
+    for registro in registros:
+        if not isinstance(registro, list) or len(registro) != 3:
+            raise ValueError('registro de concurso com formato inesperado no ValorFinal')
+        numero, data_iso, colunas = registro
+        if type(numero) is not int or numero < 1 or numero in encontrados:
+            raise ValueError('número de concurso inválido ou duplicado no ValorFinal')
+        if not isinstance(data_iso, str):
+            raise ValueError('data de concurso inválida no ValorFinal')
+        try:
+            data_obj = datetime.strptime(data_iso, '%Y-%m-%d').date()
+        except ValueError as exc:
+            raise ValueError('data de concurso fora do formato ISO no ValorFinal') from exc
+        if not isinstance(colunas, list) or len(colunas) != 7 or any(
+                type(digito) is not int or not 0 <= digito <= 9 for digito in colunas):
+            raise ValueError('sete colunas inválidas no ValorFinal')
+        dado = {'numero': numero, 'dataApuracao': data_obj.strftime('%d/%m/%Y'),
+                'listaDezenas': list(colunas)}
+        if not resultado_validado('Super Sete', dado):
+            raise ValueError('resultado não validado no ValorFinal')
+        encontrados[numero] = dado
+    if max(encontrados) != ultimo or len(encontrados) != len(registros):
+        raise ValueError('metadados de concursos inconsistentes no ValorFinal')
+    return encontrados, ultimo
+
+
+def obter_valorfinal_supersete(concurso=None):
+    registros, ultimo = historico_valorfinal_supersete()
+    escolhido = ultimo if concurso is None else concurso
+    if escolhido not in registros:
+        raise ValueError(f'concurso {escolhido} não disponível no histórico ValorFinal (até {ultimo})')
+    dado = dict(registros[escolhido])
+    if not resultado_validado('Super Sete', dado, concurso):
+        raise ValueError('concurso inválido na fonte ValorFinal')
+    return {'dados': dado, 'fonte': 'ValorFinal (histórico independente; não oficial)',
+            'url': VALORFINAL_SUPERSETE}
+
+
+@st.cache_data(ttl=900, show_spinner=False)
 def obter(mod, concurso=None, permitir_alternativa=True):
     slug = CONFIG[mod][0]
     erros = []
@@ -178,6 +228,13 @@ def obter(mod, concurso=None, permitir_alternativa=True):
         return {'dados': d, 'fonte': 'CAIXA (serviço oficial)', 'url': url}
     except (requests.RequestException, ValueError, TypeError, RuntimeError) as e:
         erros.append(f'CAIXA: {diagnostico_erro(e)}' if mod == 'Super Sete' else f'CAIXA: {type(e).__name__}')
+    # Para Super Sete, consultar o histórico ValorFinal antes da Guidi,
+    # pois a resposta "ultimo" da Guidi pode estar atrasada.
+    if permitir_alternativa and mod == 'Super Sete':
+        try:
+            return obter_valorfinal_supersete(concurso)
+        except (requests.RequestException, ValueError, TypeError, RuntimeError) as e:
+            erros.append(f'ValorFinal: {diagnostico_erro(e)}')
     if permitir_alternativa:
         url_alt = f'{GUIDI}/{slug}/' + (str(concurso) if concurso is not None else 'ultimo')
         try:
@@ -281,7 +338,7 @@ def linha_historico(d, mod):
     return linha
 
 
-st.title('🎯 LoterIA Pro 4.2.4 — diagnóstico Super Sete (teste local)')
+st.title('🎯 LoterIA Pro 4.2.6 — prioridade ValorFinal Super Sete (teste local)')
 st.caption('Estatísticas descritivas e geração de combinações. Nenhuma estratégia prevê sorteios ou aumenta comprovadamente as chances.')
 mod = st.selectbox('Modalidade', list(CONFIG))
 if 'historicos' not in st.session_state:
@@ -407,7 +464,7 @@ with c1:
     st.write('**Consultar resultado — Caixa primeiro; fonte independente opcional em caso de falha**')
     consultar = st.button('🔄 Consultar último resultado', type='primary')
 with c2:
-    alternativa = st.checkbox('Permitir fontes alternativas (Guidi e terceira API para Super Sete)', value=True,
+    alternativa = st.checkbox('Permitir fontes alternativas (Guidi, Heroku e ValorFinal para Super Sete)', value=True,
                                help='Fonte de terceiros. Pode ter atraso, limites de acesso ou estar indisponível fora do Brasil.')
     st.caption('Cache de rede: até 15 minutos. A consulta automática acontece na abertura da sessão; o botão acima permite verificar novamente.')
 if consultar:
@@ -572,4 +629,4 @@ with aba_conf:
         st.caption('O backtest não prevê sorteios futuros e não calcula retorno financeiro.')
 
 st.divider()
-st.caption('Fontes: CAIXA (primária); API Guidi e LoteriasCaixa Heroku (terceiros, alternativas opcionais). Todas sujeitas a falhas. Backup JSON é necessário para guardar dados entre sessões. Uso responsável.')
+st.caption('Fontes: CAIXA (primária); API Guidi, LoteriasCaixa Heroku e ValorFinal (terceiros, alternativas opcionais). Todas sujeitas a falhas. Backup JSON é necessário para guardar dados entre sessões. Uso responsável.')
