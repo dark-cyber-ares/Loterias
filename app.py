@@ -431,7 +431,7 @@ def linha_historico(d, mod):
     return linha
 
 
-st.title('🎯 LoterIA Pro 4.2.7 — fontes alternativas Super Sete (teste local)')
+st.title('🎯 LoterIA Pro 4.2.7')
 st.caption('Estatísticas descritivas e geração de combinações. Nenhuma estratégia prevê sorteios ou aumenta comprovadamente as chances.')
 mod = st.selectbox('Modalidade', list(CONFIG))
 if 'historicos' not in st.session_state:
