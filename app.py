@@ -1,5 +1,6 @@
 """LoterIA Pro 4.2 — análise descritiva; não prevê resultados."""
 import json
+import base64
 import random
 import re
 from collections import Counter
@@ -431,7 +432,7 @@ def linha_historico(d, mod):
     return linha
 
 
-st.title('🎯 LoterIA Pro 4.2.7')
+st.title('🎯 LoterIA Pro 4.2.8')
 st.caption('Estatísticas descritivas e geração de combinações. Nenhuma estratégia prevê sorteios ou aumenta comprovadamente as chances.')
 mod = st.selectbox('Modalidade', list(CONFIG))
 if 'historicos' not in st.session_state:
@@ -444,6 +445,117 @@ if 'atualizacao_automatica' not in st.session_state:
     st.session_state.atualizacao_automatica = {}
 if 'auto_inicial_executada' not in st.session_state:
     st.session_state.auto_inicial_executada = False
+
+
+
+# Backup automático GitHub: token exclusivamente em Streamlit Secrets.
+GITHUB_OWNER = 'dark-cyber-ares'
+GITHUB_REPO = 'LoterIA-Pro-Historico'
+GITHUB_BRANCH = 'main'
+GITHUB_FILE = 'historico.json'
+
+
+def github_endpoint():
+    return f'https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/contents/{GITHUB_FILE}'
+
+
+def github_headers():
+    token = st.secrets.get('GITHUB_TOKEN', '').strip()
+    return {'Authorization': f'Bearer {token}', 'Accept': 'application/vnd.github+json',
+            'X-GitHub-Api-Version': '2022-11-28'}
+
+
+def github_ler():
+    r = requests.get(github_endpoint(), headers=github_headers(),
+                     params={'ref': GITHUB_BRANCH}, timeout=(5, 20))
+    if r.status_code == 404:
+        check = requests.get(f'https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}',
+                             headers=github_headers(), timeout=(5, 15))
+        if check.status_code != 200:
+            raise RuntimeError('Repositório inacessível: confira token e permissões.')
+        return {}, None
+    if r.status_code != 200:
+        raise RuntimeError(f'Erro ao ler GitHub: HTTP {r.status_code}')
+    info = r.json()
+    try:
+        payload = json.loads(base64.b64decode(info['content']).decode('utf-8'))
+    except (KeyError, ValueError, TypeError, UnicodeDecodeError) as exc:
+        raise RuntimeError('Backup remoto ilegível; preservado sem alterações.') from exc
+    if payload.get('formato') != 'LoterIA-Pro-4.2' or not isinstance(payload.get('historicos'), dict):
+        raise RuntimeError('Formato remoto incompatível; preservado sem alterações.')
+    hist = {}
+    for mod_, lista in payload['historicos'].items():
+        if mod_ not in CONFIG or not isinstance(lista, list):
+            raise RuntimeError('Backup remoto inválido; preservado sem alterações.')
+        hist[mod_] = {}
+        for dado in lista:
+            if not resultado_validado(mod_, dado):
+                raise RuntimeError('Resultado remoto inválido; preservado sem alterações.')
+            hist[mod_][dado['numero']] = dado
+    return hist, info['sha']
+
+
+def github_mesclar(destino, origem):
+    novos = 0
+    for mod_, concursos in origem.items():
+        alvo = destino.setdefault(mod_, {})
+        for n, dado in concursos.items():
+            if n not in alvo:
+                alvo[n] = dado
+                novos += 1
+    return novos
+
+
+def github_restaurar():
+    if not st.secrets.get('GITHUB_TOKEN', '').strip():
+        st.session_state.github_status = 'Configure GITHUB_TOKEN nos Secrets.'
+        return
+    try:
+        remoto, _ = github_ler()
+        n = github_mesclar(st.session_state.historicos, remoto)
+        st.session_state.github_status = f'Histórico recuperado: {n} registros adicionais.'
+    except (requests.RequestException, RuntimeError, ValueError) as exc:
+        st.session_state.github_status = f'Falha na recuperação: {exc}'
+
+
+def github_salvar():
+    if not st.secrets.get('GITHUB_TOKEN', '').strip():
+        st.session_state.github_status = 'Configure GITHUB_TOKEN nos Secrets.'
+        return False
+    try:
+        for tentativa in range(2):
+            remoto, sha = github_ler()
+            github_mesclar(st.session_state.historicos, remoto)
+            local = {m: v for m, v in st.session_state.historicos.items() if v}
+            for m, concursos in local.items():
+                if any(not resultado_validado(m, d) for d in concursos.values()):
+                    raise RuntimeError('Histórico local inválido; não foi salvo.')
+            if remoto == local:
+                st.session_state.github_status = 'Backup do GitHub já está atualizado.'
+                return True
+            payload = {'formato': 'LoterIA-Pro-4.2',
+                       'historicos': {m: [v[n] for n in sorted(v)] for m, v in local.items()}}
+            corpo = {'message': 'Backup automático LoterIA Pro 4.2.8',
+                     'content': base64.b64encode(json.dumps(
+                         payload, ensure_ascii=False, indent=2).encode('utf-8')).decode('ascii'),
+                     'branch': GITHUB_BRANCH}
+            if sha:
+                corpo['sha'] = sha
+            r = requests.put(github_endpoint(), headers=github_headers(),
+                             json=corpo, timeout=(5, 25))
+            if r.status_code in (200, 201):
+                st.session_state.github_status = f'Backup salvo: {sum(map(len, local.values()))} concursos.'
+                return True
+            if r.status_code not in (409, 422) or tentativa == 1:
+                raise RuntimeError(f'Falha ao salvar: HTTP {r.status_code}')
+    except (requests.RequestException, RuntimeError, ValueError) as exc:
+        st.session_state.github_status = f'Falha no backup: {exc}'
+    return False
+
+
+if 'github_inicial_executado' not in st.session_state:
+    st.session_state.github_inicial_executado = True
+    github_restaurar()
 
 
 def atualizar_todas_modalidades(permitir_alternativa=True):
@@ -486,6 +598,8 @@ def atualizar_todas_modalidades(permitir_alternativa=True):
             resumo[modalidade] = {'horario': instante, 'ultimo': None, 'novos': 0,
                                   'falhas': [str(exc)], 'fonte': 'indisponível'}
     st.session_state.atualizacao_automatica = resumo
+    if any(item['novos'] for item in resumo.values()):
+        github_salvar()
 
 
 # Uma execução por sessão: evita consultas repetidas a cada interação no Streamlit.
@@ -510,7 +624,15 @@ with st.expander('🔄 Atualização automática dos sorteios — oito modalidad
                               'Situação': 'Falha: ' + '; '.join(falhas_status[:2]) if falhas_status else ('ATENÇÃO: fonte pode estar atrasada' if modalidade == 'Super Sete' and status.get('ultimo') and (date.today() - datetime.strptime(st.session_state.get(f'ultimo_{modalidade}', {}).get('dataApuracao', '01/01/2000'), '%d/%m/%Y').date()).days > 7 else 'OK'),
                               'Fonte': status.get('fonte', '—')})
     st.dataframe(pd.DataFrame(linhas_status), hide_index=True, use_container_width=True)
-    st.info('Históricos são mantidos na sessão. Para preservar entre sessões ou reinícios, baixe o backup JSON.')
+    st.info('Com o token configurado, o histórico é recuperado e sincronizado com o GitHub. Mantenha também um backup JSON local.')
+
+with st.expander('☁️ Backup automático no GitHub', expanded=True):
+    st.caption(f'Destino: {GITHUB_OWNER}/{GITHUB_REPO} — {GITHUB_FILE}')
+    st.write(st.session_state.get('github_status', 'Aguardando sincronização.'))
+    if st.button('☁️ Sincronizar histórico agora'):
+        github_salvar()
+        st.rerun()
+    st.caption('A sincronização ocorre ao importar ou consultar novos resultados; não funciona com o app fechado.')
 
 with st.expander('💾 Salvar ou restaurar histórico (backup portátil)', expanded=False):
     st.caption('O backup contém somente os concursos que estão na memória desta sessão. Confira os totais antes de baixar.')
@@ -547,6 +669,8 @@ with st.expander('💾 Salvar ou restaurar histórico (backup portátil)', expan
                         validos += 1
                     else:
                         rejeitados += 1
+            if validos:
+                github_salvar()
             st.session_state.backup_import_msg = f'{validos} registros importados; {rejeitados} rejeitados. Confira o resumo atualizado abaixo.'
             st.rerun()
         except (ValueError, TypeError, json.JSONDecodeError, AttributeError) as e:
@@ -568,6 +692,7 @@ if consultar:
         st.session_state.historicos.setdefault(mod, {})[d['numero']] = d
         st.session_state[f'ultimo_{mod}'] = d
         st.session_state[f'hora_{mod}'] = datetime.now().astimezone().strftime('%d/%m/%Y %H:%M:%S')
+        github_salvar()
     except RuntimeError as e:
         st.error(f'Consulta não concluída: {e}')
         st.info('Nenhum novo resultado foi confirmado. O gerador aleatório continua disponível.')
@@ -614,6 +739,8 @@ with aba_hist:
                     falhas[concurso] = str(e)
                 barra.progress((i + 1) / total)
             st.session_state.falhas[mod] = falhas
+            if ok:
+                github_salvar()
             st.success(f'{ok} concursos carregados; {len(falhas)} não carregados.')
         except RuntimeError as e:
             st.error(f'Não foi possível iniciar o histórico: {e}')
